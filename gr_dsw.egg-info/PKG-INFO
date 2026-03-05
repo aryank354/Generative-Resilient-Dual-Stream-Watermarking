@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: gr_dsw
+Version: 1.0.0
+Summary: Generative-Resilient Dual-Stream Watermarking for Image Recovery
+Author: Prabhat Kumar
+Author-email: prabhat.kumar@nsut.ac.in
+Requires-Dist: torch
+Requires-Dist: torchvision
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: PyWavelets
+Requires-Dist: opencv-python
+Requires-Dist: scikit-image
+Dynamic: author
+Dynamic: author-email
+Dynamic: requires-dist
+Dynamic: summary
