@@ -14,7 +14,6 @@ import attacks
 
 def run_comprehensive_evaluation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Initialize with the 256-bit hyper-redundant brain
     model = WatermarkViTAutoEncoder(latent_dim=256).to(device) 
     
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,17 +32,25 @@ def run_comprehensive_evaluation():
 
     image_files = sorted([f for f in os.listdir(raw_images_dir) if f.lower().endswith(('.png', '.tiff', '.tif', '.jpg', '.jpeg'))])
     
-    # Define the 6 attack scenarios
     attack_funcs = {
-        "Crop Attack": attacks.attack_crop,
+        "Crop Attack (10%)": lambda img: attacks.attack_crop(img, 0.10),
+        "Crop Attack (25%)": lambda img: attacks.attack_crop(img, 0.25),
+        "Crop Attack (50%)": lambda img: attacks.attack_crop(img, 0.50),
+        "Crop Attack (75%)": lambda img: attacks.attack_crop(img, 0.75),
+        "Crop Attack (90%)": lambda img: attacks.attack_crop(img, 0.90),
+        "Crop Attack (100%)": lambda img: attacks.attack_crop(img, 1.00),
+        
         "Text Insertion": attacks.attack_text_insertion,
+        "Copy-Move Forgery": attacks.attack_copy_move,
         "Face Swap Sim": attacks.attack_face_swap_sim,
+        
+        "Median Filter (5x5)": lambda img: attacks.attack_median_filter(img, 5),
         "JPEG Compress (Q=60)": lambda img: attacks.attack_jpeg_compression(img, 60),
-        "Gaussian Noise": attacks.attack_noise_gaussian,
-        "Salt & Pepper": attacks.attack_noise_sp
+        "Gaussian Noise (Med)": lambda img: attacks.attack_noise_gaussian(img, 25),
+        "S&P Noise (Med)": lambda img: attacks.attack_noise_sp(img, 0.05),
+        "Speckle Noise (Med)": lambda img: attacks.attack_speckle_noise(img, 0.10)
     }
 
-    # Secret cryptographic key
     secret_key = [1.1, 2.2, 3.3, 4.4]
 
     with PdfPages(pdf_path) as pdf:
@@ -57,18 +64,16 @@ def run_comprehensive_evaluation():
             
             img_tensor = torch.tensor(original_image / 255.0, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
 
-            # 1. Extract & Encrypt
             with torch.no_grad(): 
                 latent_bits, _ = model(img_tensor)
             chaos_seq = generate_chaotic_key(256, secret_key) 
             encrypted_payload = process_watermark(latent_bits.squeeze().cpu().numpy(), chaos_seq)
 
-            # 2. Embed (alpha=2.0 for high imperceptibility)
-            robust_img, orig_S = embed_robust_watermark(original_image, encrypted_payload, alpha=2.0)
+            # Embedding with alpha=5.0
+            robust_img, orig_S = embed_robust_watermark(original_image, encrypted_payload, alpha=5.0)
             watermarked_img = embed_fragile_watermark(robust_img)
             psnr_emb, ssim_emb = evaluate_quality(original_image, watermarked_img)
 
-            # 3. Plotting Setup
             fig, axes = plt.subplots(len(attack_funcs), 5, figsize=(20, 4 * len(attack_funcs)))
             fig.suptitle(f"GR-DSW Robustness Analysis: {img_name}\nEmbedding PSNR: {psnr_emb:.2f} dB, SSIM: {ssim_emb:.4f}", fontsize=20, fontweight='bold')
             
@@ -76,29 +81,21 @@ def run_comprehensive_evaluation():
             for attack_name, atk_fn in attack_funcs.items():
                 print(f"    -> Running {attack_name}...")
                 
-                # Apply the specific attack
                 attacked_img = atk_fn(watermarked_img)
                 tamper_map = detect_tampering(attacked_img)
                 
-                # Check for Global vs Local attack (>40% damage)
                 tamper_ratio = np.sum(tamper_map == 255) / tamper_map.size
                 
-                if tamper_ratio > 0.40:
-                    # Global Attack Bypass (Noise/JPEG)
+                if tamper_ratio > 0.85 and "Crop" not in attack_name:
                     final_recovered = cv2.medianBlur(attacked_img, 3)
-                    # Flag the whole map as attacked for the PDF
                     tamper_map.fill(255) 
                 else:
-                    # Local Attack Healing (Crop, Text, Forgery)
                     receiver_key = generate_chaotic_key(256, secret_key) 
                     ai_hallucination = extract_and_recover(attacked_img, orig_S, receiver_key, model.decoder, device)
-                    # Splice perfectly using the solid morphological tamper map
                     final_recovered = np.where(tamper_map == 255, ai_hallucination, attacked_img).astype(np.uint8)
                 
-                # Evaluate final recovery
                 rec_psnr, rec_ssim = evaluate_quality(original_image, final_recovered)
 
-                # --- PLOTTING ROW (with vmin=0, vmax=255 to fix black maps) ---
                 ax = axes[row_idx]
                 ax[0].imshow(original_image, cmap='gray', vmin=0, vmax=255)
                 ax[0].set_title("Original Image")

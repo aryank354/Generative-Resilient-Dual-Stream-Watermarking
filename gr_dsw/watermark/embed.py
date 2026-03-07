@@ -2,14 +2,14 @@ import numpy as np
 import pywt
 import hashlib
 
-def embed_robust_watermark(image_channel, encrypted_bits, alpha=2.0):
+def embed_robust_watermark(image_channel, encrypted_bits, alpha=25.0):
     coeffs = pywt.wavedec2(image_channel, 'haar', level=2)
     cA2, (cH2, cV2, cD2), (cH1, cV1, cD1) = coeffs
     
     cH2_flat = cH2.flatten()
     orig_cH2 = cH2_flat.copy()
     
-    # 16x Hyper-Redundancy (256 bits * 16 = 4096)
+    # 16x Hyper-Redundancy
     repeated_bits = np.tile(encrypted_bits, 16)
     
     for i in range(len(repeated_bits)):

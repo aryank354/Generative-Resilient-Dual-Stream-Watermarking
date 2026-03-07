@@ -2,10 +2,24 @@ import numpy as np
 import cv2
 import random
 
-def attack_crop(image):
-    """Simulates malicious object removal (Data Loss)"""
+def attack_crop(image, crop_percentage=0.10):
+    """
+    Simulates malicious object removal or catastrophic data loss.
+    crop_percentage: float from 0.0 to 1.0 representing the area of the image to crop.
+    """
     attacked = image.copy()
-    attacked[90:160, 90:160] = 0 # Blackout a central block
+    h, w = attacked.shape
+    
+    # Calculate dimensions of the crop box to match the percentage area
+    crop_side_ratio = np.sqrt(crop_percentage)
+    crop_h = int(h * crop_side_ratio)
+    crop_w = int(w * crop_side_ratio)
+    
+    # Calculate center coordinates for the blackout
+    start_y = (h - crop_h) // 2
+    start_x = (w - crop_w) // 2
+    
+    attacked[start_y:start_y+crop_h, start_x:start_x+crop_w] = 0
     return attacked
 
 def attack_text_insertion(image):
@@ -25,27 +39,42 @@ def attack_face_swap_sim(image):
     attacked[70:180, 70:180] = np.clip(forged_patch, 0, 255)
     return attacked
 
+def attack_copy_move(image):
+    """Simulates internal forgery (copying one area to hide another)"""
+    attacked = image.copy()
+    # Copy a 60x60 patch from the top-left to the center
+    patch = attacked[10:70, 10:70]
+    attacked[100:160, 100:160] = patch
+    return attacked
+
+def attack_median_filter(image, kernel_size=5):
+    """Simulates an adversary trying to smooth out/erase the watermark"""
+    return cv2.medianBlur(image, kernel_size)
+
 def attack_jpeg_compression(image, quality=60):
     """Simulates social media uploading/compression (Global Attack)"""
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
     _, encimg = cv2.imencode('.jpg', image, encode_param)
     return cv2.imdecode(encimg, cv2.IMREAD_GRAYSCALE)
 
-def attack_noise_gaussian(image, mean=0, std=15):
-    """Simulates sensor/transmission noise (Global Attack)"""
-    noise = np.random.normal(mean, std, image.shape).astype(np.float32)
+def attack_noise_gaussian(image, std=15):
+    """Gaussian noise with variable standard deviation (density)"""
+    noise = np.random.normal(0, std, image.shape).astype(np.float32)
     attacked = cv2.add(image.astype(np.float32), noise)
     return np.clip(attacked, 0, 255).astype(np.uint8)
 
 def attack_noise_sp(image, prob=0.05):
-    """Simulates Salt & Pepper impulse noise (Global Attack)"""
+    """Salt and pepper noise with variable probability (density)"""
     attacked = image.copy()
     thres = 1 - prob
-    for i in range(image.shape[0]):
-        for j in range(image.shape[1]):
-            rdn = random.random()
-            if rdn < prob:
-                attacked[i][j] = 0
-            elif rdn > thres:
-                attacked[i][j] = 255
+    # Vectorized for extreme speed
+    rdn = np.random.rand(*image.shape)
+    attacked[rdn < prob] = 0
+    attacked[rdn > thres] = 255
     return attacked
+
+def attack_speckle_noise(image, intensity=0.1):
+    """Speckle noise with variable intensity"""
+    noise = np.random.randn(*image.shape)
+    attacked = image.astype(np.float32) + image.astype(np.float32) * noise * intensity
+    return np.clip(attacked, 0, 255).astype(np.uint8)
