@@ -199,17 +199,25 @@ def run_comprehensive_evaluation():
                 num_labels, _ = cv2.connectedComponents(tamper_map)
                 
                 # =========================================================
-                # SOTA UPGRADE: THE SMART CIRCUIT BREAKER
+                # SOTA UPGRADE: DUAL-MODE AI REGENERATION
                 # =========================================================
                 is_global_attack = tamper_ratio > 0.85 or num_labels > 50
                 
                 if is_global_attack:
-                    # Global Attack -> Bypass AI, apply baseline filter to survive
-                    # This ensures the graceful degradation to ~28 dB PSNR!
-                    final_recovered = cv2.medianBlur(attacked_img, 3)
-                    routing_msg = "Global Attack -> Bypassed AI"
+                    # MODE 1: FULL AI REGENERATION (Defeating JPEG/Noise)
+                    # Pass a blank tamper map (all zeros) so the extractor relies 
+                    # entirely on the 16x DWT redundancy to power through the global noise.
+                    dummy_tamper_map = np.zeros_like(tamper_map) 
+                    receiver_key = generate_chaotic_key(256, secret_key)
+                    
+                    ai_hallucination = extract_and_recover(attacked_img, orig_cH2_flat, receiver_key, model.decoder, device, tamper_map=dummy_tamper_map)
+                    
+                    # Replace the ENTIRE noisy image with the clean AI hallucination!
+                    final_recovered = ai_hallucination
+                    routing_msg = "Global Attack -> Full AI Regeneration"
+                
                 else:
-                    # Localized Attack -> Extract background memory and let AI inpaint
+                    # MODE 2: LOCALIZED AI INPAINTING (Defeating Crops/Splicing)
                     receiver_key = generate_chaotic_key(256, secret_key)
                     
                     ai_hallucination = extract_and_recover(attacked_img, orig_cH2_flat, receiver_key, model.decoder, device, tamper_map=tamper_map)
@@ -232,7 +240,6 @@ def run_comprehensive_evaluation():
                 axes[1].set_title("Attacked Image")
                 axes[1].axis('off')
 
-                # Using vmin/vmax to guarantee 100% white isn't rendered as black
                 axes[2].imshow(tamper_map, cmap='gray', vmin=0, vmax=255)
                 axes[2].set_title(f"Tamper Map ({tamper_ratio*100:.1f}% | {num_labels} clusters)")
                 axes[2].axis('off')
