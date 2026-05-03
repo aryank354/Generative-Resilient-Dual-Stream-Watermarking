@@ -1,2 +1,3 @@
 venv
 gr_dsw/models/pretrained_vit.pth
+TrainingDataset
