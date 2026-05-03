@@ -10,3 +10,4 @@ pandas
 tqdm
 pytorch-msssim
 reportlab
+kaggle

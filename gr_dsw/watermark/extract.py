@@ -12,7 +12,9 @@ def detect_tampering(attacked_img):
         for j in range(0, attacked_img.shape[1], 8):
             block = attacked_img[i:i+8, j:j+8]
             msb_block = block & 0xFC
-            expected_hash = int(hashlib.md5(msb_block.tobytes()).hexdigest()[:2], 16) % 4
+            
+            # UPGRADED: SHA-256 instead of MD5
+            expected_hash = int(hashlib.sha256(msb_block.tobytes()).hexdigest()[:2], 16) % 4
             actual_lsb = block & 0x03
             
             if np.any(actual_lsb != expected_hash):
@@ -23,12 +25,12 @@ def detect_tampering(attacked_img):
     kernel_dilate = np.ones((12, 12), np.uint8)
     return cv2.dilate(solid_tamper_map, kernel_dilate, iterations=1)
 
-def extract_and_recover(attacked_channel, orig_cH2, chaotic_key, decoder_model, device, tamper_map=None, latent_dim=256):
+def extract_and_recover(attacked_channel, chaotic_key, decoder_model, device, tamper_map=None, latent_dim=256, delta=16.0):
+    # Notice orig_cH2 is GONE from the arguments!
     coeffs = pywt.wavedec2(attacked_channel, 'haar', level=2)
     _, (cH2_atk, _, _), _ = coeffs
     cH2_atk_flat = cH2_atk.flatten()
     
-    # Give every coefficient 1 vote by default
     weights = np.ones(4096, dtype=np.float32)
     
     # THE SOTA UPGRADE: Silence the corrupted votes!
@@ -37,10 +39,12 @@ def extract_and_recover(attacked_channel, orig_cH2, chaotic_key, decoder_model, 
         tamper_flat = tamper_map_64.flatten()
         weights[tamper_flat == 255] = 0.0 # Revoke voting rights for tampered pixels
     
-    extracted_bits = np.zeros(4096, dtype=np.float32)
-    for i in range(4096):
-        bit = 1.0 if cH2_atk_flat[i] > orig_cH2[i] else 0.0
-        extracted_bits[i] = bit * weights[i]
+    # QIM BLIND EXTRACTION MATH
+    step = np.round(cH2_atk_flat / delta)
+    extracted_bits = (step % 2).astype(np.float32)
+    
+    # Apply Circuit Breaker weights
+    extracted_bits *= weights
             
     reshaped_bits = extracted_bits.reshape(16, latent_dim)
     reshaped_weights = weights.reshape(16, latent_dim)
@@ -61,4 +65,6 @@ def extract_and_recover(attacked_channel, orig_cH2, chaotic_key, decoder_model, 
         recovered_img_tensor = decoder_model(latent_tensor)
         
     recovered_np = recovered_img_tensor.squeeze().cpu().numpy() * 255.0
-    return recovered_np.astype(np.uint8)
+    
+    # NEW: Return the raw decrypted bits so we can calculate BER
+    return recovered_np.astype(np.uint8), decrypted_bits

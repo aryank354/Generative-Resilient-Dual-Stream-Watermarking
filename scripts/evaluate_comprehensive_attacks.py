@@ -91,9 +91,6 @@ class WatermarkAttacks:
         return cv2.filter2D(self.img, -1, kernel)
 
 
-# ==========================================
-# HELPER: PDF TABLE GENERATOR
-# ==========================================
 def add_table_to_pdf(pdf, title, columns, row_data):
     fig_width = max(10, len(columns) * 1.3)
     fig, ax = plt.subplots(figsize=(fig_width, len(row_data) * 0.4 + 2))
@@ -118,9 +115,6 @@ def add_table_to_pdf(pdf, title, columns, row_data):
     plt.close()
 
 
-# ==========================================
-# 4. COMPREHENSIVE PIPELINE EXECUTION
-# ==========================================
 def run_comprehensive_evaluation():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = WatermarkViTAutoEncoder(latent_dim=256).to(device)
@@ -148,6 +142,7 @@ def run_comprehensive_evaluation():
     results_ssim = defaultdict(list)
     results_ncc = defaultdict(list)
     results_tdr = defaultdict(list)
+    results_bar = defaultdict(list) # NEW: Bit Accuracy Rate
     
     varying_rates = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     varying_deg_psnr = defaultdict(lambda: defaultdict(list))
@@ -166,8 +161,11 @@ def run_comprehensive_evaluation():
             with torch.no_grad():
                 latent_bits, _ = model(img_tensor)
             
-            encrypted_payload = process_watermark(latent_bits.squeeze().cpu().numpy(), chaos_seq)
-            robust_img, orig_cH2_flat = embed_robust_watermark(original_image, encrypted_payload, alpha=8.0)
+            original_latent_array = latent_bits.squeeze().cpu().numpy()
+            encrypted_payload = process_watermark(original_latent_array, chaos_seq)
+            
+            # UPDATED: No orig_cH2_flat returned
+            robust_img = embed_robust_watermark(original_image, encrypted_payload, delta=16.0)
             watermarked_img = embed_fragile_watermark(robust_img)
             
             wm_psnr, wm_ssim = evaluate_quality(original_image, watermarked_img)
@@ -176,9 +174,6 @@ def run_comprehensive_evaluation():
 
             attacker = WatermarkAttacks(watermarked_img, base_dir)
             
-            # ---------------------------------------------------------
-            # PHASE 1: STANDARD ATTACKS (For Table 2 & 3)
-            # ---------------------------------------------------------
             base_attacks = {
                 "Content Removal (Hole)": attacker.attack_content_removal(80),
                 "Semantic Splicing": attacker.attack_collage_splicing(),
@@ -203,13 +198,19 @@ def run_comprehensive_evaluation():
                 is_global_attack = tamper_ratio > 0.85 or num_labels > 50
                 receiver_key = generate_chaotic_key(256, secret_key)
                 
+                # UPDATED: Blind Extraction, catching extracted_bits
                 if is_global_attack:
                     dummy_tamper_map = np.zeros_like(tamper_map) 
-                    ai_hallucination = extract_and_recover(attacked_img, orig_cH2_flat, receiver_key, model.decoder, device, tamper_map=dummy_tamper_map)
+                    ai_hallucination, ext_bits = extract_and_recover(attacked_img, receiver_key, model.decoder, device, tamper_map=dummy_tamper_map, delta=16.0)
                     final_recovered = ai_hallucination
                 else:
-                    ai_hallucination = extract_and_recover(attacked_img, orig_cH2_flat, receiver_key, model.decoder, device, tamper_map=tamper_map)
+                    ai_hallucination, ext_bits = extract_and_recover(attacked_img, receiver_key, model.decoder, device, tamper_map=tamper_map, delta=16.0)
                     final_recovered = np.where(tamper_map == 255, ai_hallucination, attacked_img).astype(np.uint8)
+
+                # Calculate Bit Accuracy Rate (BAR)
+                incorrect_bits = np.sum(original_latent_array != ext_bits)
+                bar = (1.0 - (incorrect_bits / 256.0)) * 100.0
+                results_bar[atk_name].append(bar)
 
                 rec_psnr, rec_ssim = evaluate_quality(original_image, final_recovered)
                 img_ncc = np.sum(original_image.astype(float) * final_recovered.astype(float)) / \
@@ -219,21 +220,15 @@ def run_comprehensive_evaluation():
                 results_ssim[atk_name].append(rec_ssim)
                 results_ncc[atk_name].append(img_ncc)
 
-            # ---------------------------------------------------------
-            # PHASE 2: VARYING RATE ATTACKS (10% to 90%)
-            # ---------------------------------------------------------
             print("    -> Running 10-90% Varying Rate Evaluations (Degradation & Tampering)...")
             for rate in varying_rates:
-                
-                # --- VARYING DEGRADATION (For New Table 4) ---
                 deg_attacks = {
-                    "JPEG Compression (Severity %)": attacker.attack_jpeg(max(10, int((1.0 - rate) * 100))), # 10% Sev = QF 90, 90% Sev = QF 10
+                    "JPEG Compression (Severity %)": attacker.attack_jpeg(max(10, int((1.0 - rate) * 100))),
                     "Salt & Pepper Noise (%)": attacker.attack_salt_pepper(rate),
                     "Gaussian Noise (var x 0.1)": attacker.attack_gaussian_noise(rate * 0.1),
                     "Speckle Noise (var x 0.1)": attacker.attack_speckle_noise(rate * 0.1)
                 }
                 
-                # --- VARYING TAMPERING (For New Table 5) ---
                 box_side = int(np.sqrt(attacker.h * attacker.w * rate))
                 tamp_attacks = {
                     "Crop (%)": attacker.attack_crop(rate),
@@ -241,35 +236,32 @@ def run_comprehensive_evaluation():
                     "Content Removal (%)": attacker.attack_content_removal(box_side)
                 }
                 
-                # Process Degradation
+                # Degradation
                 for atk_name, attacked_img in deg_attacks.items():
                     tamper_map = detect_tampering(attacked_img)
                     is_global = (np.sum(tamper_map == 255) / tamper_map.size) > 0.85 or cv2.connectedComponents(tamper_map)[0] > 50
                     rec_key = generate_chaotic_key(256, secret_key)
                     if is_global:
-                        final_recovered = extract_and_recover(attacked_img, orig_cH2_flat, rec_key, model.decoder, device, tamper_map=np.zeros_like(tamper_map))
+                        final_recovered, _ = extract_and_recover(attacked_img, rec_key, model.decoder, device, tamper_map=np.zeros_like(tamper_map), delta=16.0)
                     else:
-                        ai_hal = extract_and_recover(attacked_img, orig_cH2_flat, rec_key, model.decoder, device, tamper_map=tamper_map)
+                        ai_hal, _ = extract_and_recover(attacked_img, rec_key, model.decoder, device, tamper_map=tamper_map, delta=16.0)
                         final_recovered = np.where(tamper_map == 255, ai_hal, attacked_img).astype(np.uint8)
                     rec_psnr, _ = evaluate_quality(original_image, final_recovered)
                     varying_deg_psnr[atk_name][rate].append(rec_psnr)
 
-                # Process Tampering
+                # Tampering
                 for atk_name, attacked_img in tamp_attacks.items():
                     tamper_map = detect_tampering(attacked_img)
                     is_global = (np.sum(tamper_map == 255) / tamper_map.size) > 0.85 or cv2.connectedComponents(tamper_map)[0] > 50
                     rec_key = generate_chaotic_key(256, secret_key)
                     if is_global:
-                        final_recovered = extract_and_recover(attacked_img, orig_cH2_flat, rec_key, model.decoder, device, tamper_map=np.zeros_like(tamper_map))
+                        final_recovered, _ = extract_and_recover(attacked_img, rec_key, model.decoder, device, tamper_map=np.zeros_like(tamper_map), delta=16.0)
                     else:
-                        ai_hal = extract_and_recover(attacked_img, orig_cH2_flat, rec_key, model.decoder, device, tamper_map=tamper_map)
+                        ai_hal, _ = extract_and_recover(attacked_img, rec_key, model.decoder, device, tamper_map=tamper_map, delta=16.0)
                         final_recovered = np.where(tamper_map == 255, ai_hal, attacked_img).astype(np.uint8)
                     rec_psnr, _ = evaluate_quality(original_image, final_recovered)
                     varying_tamp_psnr[atk_name][rate].append(rec_psnr)
 
-        # =========================================================
-        # AUTOMATED TABLE GENERATION FOR PDF 
-        # =========================================================
         print("\n[*] Generating PDF Data Tables...")
 
         # Table 1
@@ -281,16 +273,17 @@ def run_comprehensive_evaluation():
         t2_data, t3_data = [], []
         for atk in base_attacks.keys():
             t2_data.append([atk, f"{np.mean(results_ncc[atk]):.4f}", f"{np.mean(results_tdr[atk]):.4f}"])
-            t3_data.append([atk, f"{np.mean(results_psnr[atk]):.2f}", f"{np.mean(results_ssim[atk]):.4f}"])
+            # UPDATED TABLE 3 TO INCLUDE BIT ACCURACY RATE (BAR)
+            t3_data.append([atk, f"{np.mean(results_psnr[atk]):.2f}", f"{np.mean(results_ssim[atk]):.4f}", f"{np.mean(results_bar[atk]):.1f}%"])
+            
         t2_data.append(["AVERAGE", f"{np.mean([float(r[1]) for r in t2_data]):.4f}", f"{np.mean([float(r[2]) for r in t2_data]):.4f}"])
-        t3_data.append(["AVERAGE", f"{np.mean([float(r[1]) for r in t3_data]):.2f}", f"{np.mean([float(r[2]) for r in t3_data]):.4f}"])
+        t3_data.append(["AVERAGE", f"{np.mean([float(r[1]) for r in t3_data[:-1]]):.2f}", f"{np.mean([float(r[2]) for r in t3_data[:-1]]):.4f}", f"{np.mean([float(r[3].replace('%', '')) for r in t3_data[:-1]]):.1f}%"])
         
         add_table_to_pdf(pdf, "Table 2: Average Watermark NCC and Tamper Detection Rate (TDR)", ["Attack Type", "Avg NCC", "Avg TDR"], t2_data)
-        add_table_to_pdf(pdf, "Table 3: Average Recovered PSNR and SSIM per Attack Type", ["Attack Type", "Avg Rec PSNR (dB)", "Avg Rec SSIM"], t3_data)
+        add_table_to_pdf(pdf, "Table 3: Average Recovered PSNR, SSIM, and Bit Accuracy per Attack", ["Attack Type", "Avg Rec PSNR (dB)", "Avg Rec SSIM", "Avg Bit Accuracy"], t3_data)
 
-        # NEW TABLE 4: Varying Degradation (Noise & JPEG)
+        # Table 4
         var_columns = ["Attack Severity", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"]
-        
         t4_data = []
         col_sums_deg = {rate: [] for rate in varying_rates}
         for atk_name in varying_deg_psnr.keys():
@@ -307,7 +300,7 @@ def run_comprehensive_evaluation():
         t4_data.append(t4_avg_row)
         add_table_to_pdf(pdf, "Table 4: Average Recovery PSNR (dB) Under Varying Signal Degradation", var_columns, t4_data)
 
-        # NEW TABLE 5: Varying Tampering (Crop, Row, Area)
+        # Table 5
         t5_data = []
         col_sums_tamp = {rate: [] for rate in varying_rates}
         for atk_name in varying_tamp_psnr.keys():
@@ -324,7 +317,7 @@ def run_comprehensive_evaluation():
         t5_data.append(t5_avg_row)
         add_table_to_pdf(pdf, "Table 5: Average Recovery PSNR (dB) Under Varying Physical Tampering Rates", var_columns, t5_data)
 
-        # NEW TABLE 6: SOTA Comparison
+        # Table 6
         live_50_mean = np.mean(results_psnr["Crop 50%"])
         t6_data = [
             ["Sarkar [38]", "DWT + Spatial", "45.34", "Fails", "40%"],
@@ -335,7 +328,7 @@ def run_comprehensive_evaluation():
         ]
         add_table_to_pdf(pdf, "Table 6: Comparison with State-of-the-Art Methods", ["Method", "Technique", "W-PSNR (dB)", "R-PSNR (50% Crop)", "Max Tamper Rate"], t6_data)
 
-    print(f"\n[+] SUCCESS! Final PDF with exactly 6 perfectly structured tables generated at: {pdf_path}")
+    print(f"\n[+] SUCCESS! Final PDF generated at: {pdf_path}")
 
 if __name__ == "__main__":
     run_comprehensive_evaluation()
